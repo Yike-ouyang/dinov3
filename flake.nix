@@ -40,6 +40,21 @@
       in
       with pkgs;
       rec {
+        apps.default =
+          let
+            python_with_pkgs = python3.withPackages (pp: [
+              (inputs.nahual-flake.packages.${system}.nahual)
+              packages.dinov2
+            ]);
+            runServer = pkgs.writeScriptBin "runserver.sh" ''
+              #!${pkgs.bash}/bin/bash
+              ${python_with_pkgs}/bin/python ${self}/server.py ''${@:-"ipc:///tmp/dinov3.ipc"}
+            '';
+          in
+          {
+            type = "app";
+            program = "${runServer}/bin/runserver.sh";
+          };
         packages = {
           # xformers = pkgs.python312.pkgs.callPackage ./nix/xformers.nix { };
           dinov3 = pkgs.python312.pkgs.callPackage ./nix/dinov3.nix { };
