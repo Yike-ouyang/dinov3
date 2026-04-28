@@ -6,6 +6,8 @@
     systems.url = "github:nix-systems/default";
     flake-utils.url = "github:numtide/flake-utils";
     flake-utils.inputs.systems.follows = "systems";
+    pynng-flake.url = "github:afermg/pynng";
+    pynng-flake.inputs.nixpkgs.follows = "nixpkgs";
   };
 
   outputs =
@@ -43,8 +45,8 @@
         apps.default =
           let
             python_with_pkgs = python3.withPackages (pp: [
-              (inputs.nahual-flake.packages.${system}.nahual)
-              packages.dinov2
+              packages.nahual
+              packages.dinov3
             ]);
             runServer = pkgs.writeScriptBin "runserver.sh" ''
               #!${pkgs.bash}/bin/bash
@@ -57,13 +59,17 @@
           };
         packages = {
           # xformers = pkgs.python312.pkgs.callPackage ./nix/xformers.nix { };
-          dinov3 = pkgs.python312.pkgs.callPackage ./nix/dinov3.nix { };
+          dinov3 = pkgs.python3.pkgs.callPackage ./nix/dinov3.nix { };
+          nahual = pkgs.python3.pkgs.callPackage ./nix/nahual.nix {
+            pynng = inputs.pynng-flake.packages.${system}.pynng;
+          };
         };
         devShells = {
           default =
             let
               python_with_pkgs = (
-                python312.withPackages (pp: [
+                python3.withPackages (pp: [
+                  packages.nahual
                   packages.dinov3
                 ])
               );
@@ -71,7 +77,7 @@
             mkShell {
               packages = [
                 python_with_pkgs
-                python312Packages.venvShellHook
+                python3Packages.venvShellHook
                 pkgs.cudaPackages.cudatoolkit
                 pkgs.cudaPackages.cudnn
               ];
