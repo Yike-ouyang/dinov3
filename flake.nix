@@ -6,8 +6,8 @@
     systems.url = "github:nix-systems/default";
     flake-utils.url = "github:numtide/flake-utils";
     flake-utils.inputs.systems.follows = "systems";
-    pynng-flake.url = "github:afermg/pynng";
-    pynng-flake.inputs.nixpkgs.follows = "nixpkgs";
+    nahual-flake.url = "github:afermg/nahual";
+    nahual-flake.inputs.nixpkgs.follows = "nixpkgs";
   };
 
   outputs =
@@ -45,7 +45,7 @@
         apps.default =
           let
             python_with_pkgs = python3.withPackages (pp: [
-              packages.nahual
+              (inputs.nahual-flake.packages.${system}.nahual)
               packages.dinov3
             ]);
             runServer = pkgs.writeScriptBin "runserver.sh" ''
@@ -60,16 +60,13 @@
         packages = {
           # xformers = pkgs.python312.pkgs.callPackage ./nix/xformers.nix { };
           dinov3 = pkgs.python3.pkgs.callPackage ./nix/dinov3.nix { };
-          nahual = pkgs.python3.pkgs.callPackage ./nix/nahual.nix {
-            pynng = inputs.pynng-flake.packages.${system}.pynng;
-          };
         };
         devShells = {
           default =
             let
               python_with_pkgs = (
                 python3.withPackages (pp: [
-                  packages.nahual
+                  (inputs.nahual-flake.packages.${system}.nahual)
                   packages.dinov3
                 ])
               );
