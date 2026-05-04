@@ -88,8 +88,11 @@
               '';
               shellHook = ''
                 runHook venvShellHook
-                # Set PYTHONPATH to only include the Nix packages, excluding current directory
-                export PYTHONPATH=${python_with_pkgs}/${python_with_pkgs.sitePackages}
+                # PYTHONSAFEPATH=1 (Python 3.11+) keeps Python from prepending
+                # the script's directory (or cwd for python -c mode) to
+                # sys.path, which would otherwise let the in-tree dinov3/
+                # source dir shadow the nix-built package.
+                export PYTHONSAFEPATH=1
               '';
             };
         };
