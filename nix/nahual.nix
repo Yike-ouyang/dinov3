@@ -12,14 +12,14 @@
 }:
 buildPythonPackage {
   pname = "nahual";
-  version = "0.0.8";
+  version = "0.0.9";
   format = "pyproject";
 
   src = fetchFromGitHub {
     owner = "afermg";
     repo = "nahual";
-    rev = "87c4cecd5782acc42e4878ca6a439ac227663b69";
-    sha256 = "sha256-oVoffChdzb2S3gTfCnhBKRUaGmI0auFJwo54+UVF4Sw=";
+    rev = "dd58a2506fe5172fe39deaca260b4fe7ee1ef313";
+    sha256 = "sha256-02je/noKv3/iD7TjR2+4mOrGbX0wEZ+XQMDM2vlLZ9U=";
   };
 
   build-system = [
