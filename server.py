@@ -18,7 +18,7 @@ import numpy
 import pynng
 import torch
 import trio
-from nahual.preprocess import pad_channel_dim, validate_input_shape
+from nahual.preprocess import channel_chunks_rigid3, validate_input_shape
 from nahual.server import responder
 
 address = sys.argv[1]
@@ -101,7 +101,15 @@ def process(
     expected_tile_size: int,
     expected_channels: int,
 ) -> numpy.ndarray:
-    """Run the model on an NCZYX numpy array (Z is squeezed out)."""
+    """Run DINOv3 on an NCZYX numpy array.
+
+    DINOv3 is a rigid 3-channel ImageNet ViT. Inputs with C ≠ 3 are split
+    into ``ceil(C/3)`` 3-channel chunks via
+    :func:`nahual.preprocess.channel_chunks_rigid3` (recycling leading
+    channels for the trailing chunk), the backbone is run on each chunk,
+    and per-chunk cls tokens are concatenated along the feature axis.
+    Final shape is ``(N, D · ceil(C/3))``.
+    """
     if pixels.ndim != 5:
         raise ValueError(
             f"Expected NCZYX (5D) array, got shape {pixels.shape}"
@@ -109,23 +117,24 @@ def process(
     _, _, _, *input_yx = pixels.shape
     validate_input_shape(input_yx, expected_tile_size)
 
-    # pad_channel_dim already drops the Z axis (returns NCYX) and pads
-    # channels up to `expected_channels` if needed.
-    pixels = pad_channel_dim(pixels, expected_channels)
-
-    torch_tensor = torch.from_numpy(pixels.copy()).float().to(device)
-
-    with torch.no_grad():
-        result = processor(torch_tensor)
-    # Some hub entrypoints return a dict / tuple — pick the cls token.
-    if isinstance(result, dict):
-        for k in ("x_norm_clstoken", "cls", "cls_token", "logits"):
-            if k in result:
-                result = result[k]
-                break
-    elif isinstance(result, (list, tuple)):
-        result = result[0]
-    return result
+    chunks = channel_chunks_rigid3(pixels)
+    outs = []
+    for chunk in chunks:
+        torch_tensor = torch.from_numpy(chunk.copy()).float().to(device)
+        with torch.no_grad():
+            result = processor(torch_tensor)
+        # Some hub entrypoints return a dict / tuple — pick the cls token.
+        if isinstance(result, dict):
+            for k in ("x_norm_clstoken", "cls", "cls_token", "logits"):
+                if k in result:
+                    result = result[k]
+                    break
+        elif isinstance(result, (list, tuple)):
+            result = result[0]
+        if hasattr(result, "detach"):
+            result = result.detach().cpu().numpy()
+        outs.append(result)
+    return numpy.concatenate(outs, axis=1)
 
 
 async def main():
