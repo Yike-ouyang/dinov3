@@ -4,37 +4,69 @@ Loads a DINOv3 backbone via the local `hubconf.py` (torch.hub.load with
 `source='local'`), then runs it through the standard Nahual setup/process loop.
 
 Run with:
-    nix run . -- ipc:///tmp/dinov3.ipc
-or:
-    python server.py ipc:///tmp/dinov3.ipc
+    python server.py tcp://0.0.0.0:5123
 """
 
+import argparse
 import os
-import sys
 from functools import partial
-from typing import Callable
+from typing import Callable, Optional, Tuple
 
 import numpy
-import pynng
-import torch
-import trio
-from nahual.preprocess import channel_chunks_rigid3, validate_input_shape
-from nahual.server import responder
-
-address = sys.argv[1]
 
 # Repo root containing hubconf.py — defaults to the directory of this file.
 REPO_DIR = os.environ.get("DINOV3_REPO_DIR", os.path.dirname(os.path.abspath(__file__)))
 
 
+def _parse_args():
+    parser = argparse.ArgumentParser(description="Nahual TCP server for DINOv3.")
+    parser.add_argument(
+        "address",
+        nargs="?",
+        default="tcp://0.0.0.0:5123",
+        help="pynng listen address, e.g. tcp://0.0.0.0:5123",
+    )
+    return parser.parse_args()
+
+
+def _torch_device(device: Optional[int]):
+    import torch
+
+    if torch.cuda.is_available():
+        idx = 0 if device is None else int(device)
+        return torch.device(f"cuda:{idx}")
+    return torch.device("cpu")
+
+
+def _extract_numpy_features(result) -> numpy.ndarray:
+    if isinstance(result, dict):
+        for key in ("x_norm_clstoken", "cls", "cls_token", "logits"):
+            if key in result:
+                result = result[key]
+                break
+        else:
+            raise ValueError(
+                f"DINOv3 output dict does not contain a supported feature key: {sorted(result)}"
+            )
+    elif isinstance(result, (list, tuple)):
+        result = result[0]
+
+    if hasattr(result, "detach"):
+        result = result.float().detach().cpu().numpy()
+    result = numpy.asarray(result)
+    if result.ndim != 2:
+        result = result.reshape(result.shape[0], -1)
+    return result
+
+
 def setup(
     model_name: str = "dinov3_vits16",
-    weights: str | None = None,
+    weights: Optional[str] = None,
     pretrained: bool = True,
-    device: int | None = None,
+    device: Optional[int] = None,
     expected_tile_size: int = 16,
     expected_channels: int = 3,
-) -> tuple[Callable, dict]:
+) -> Tuple[Callable, dict]:
     """Load a DINOv3 backbone via the local hubconf.
 
     Parameters
@@ -49,12 +81,7 @@ def setup(
     device : int | None
         CUDA device index. None → cuda:0 if available, else cpu.
     """
-    if device is None:
-        device = 0
-    if torch.cuda.is_available():
-        torch_device = torch.device(int(device))
-    else:
-        torch_device = torch.device("cpu")
+    torch_device = _torch_device(device)
 
     kwargs = {"pretrained": bool(pretrained)}
     if weights is not None:
@@ -82,6 +109,10 @@ def setup(
         "device": str(torch_device),
         "model_name": model_name,
         "repo_dir": REPO_DIR,
+        "weights": weights,
+        "pretrained": bool(pretrained),
+        "expected_tile_size": expected_tile_size,
+        "expected_channels": expected_channels,
     }
 
     processor = partial(
@@ -97,7 +128,7 @@ def setup(
 def process(
     pixels: numpy.ndarray,
     processor: Callable,
-    device: torch.device,
+    device,
     expected_tile_size: int,
     expected_channels: int,
 ) -> numpy.ndarray:
@@ -114,39 +145,44 @@ def process(
         raise ValueError(
             f"Expected NCZYX (5D) array, got shape {pixels.shape}"
         )
-    _, _, _, *input_yx = pixels.shape
+    _, channels, _, *input_yx = pixels.shape
+    if expected_channels is not None and channels != int(expected_channels):
+        raise ValueError(
+            f"Expected {expected_channels} input channels, got {channels} for shape {pixels.shape}"
+        )
+
+    from nahual.preprocess import channel_chunks_rigid3, validate_input_shape
+
     validate_input_shape(input_yx, expected_tile_size)
 
     chunks = channel_chunks_rigid3(pixels)
     outs = []
     for chunk in chunks:
+        import torch
+
         torch_tensor = torch.from_numpy(chunk.copy()).float().to(device)
         with torch.no_grad():
             result = processor(torch_tensor)
-        # Some hub entrypoints return a dict / tuple — pick the cls token.
-        if isinstance(result, dict):
-            for k in ("x_norm_clstoken", "cls", "cls_token", "logits"):
-                if k in result:
-                    result = result[k]
-                    break
-        elif isinstance(result, (list, tuple)):
-            result = result[0]
-        if hasattr(result, "detach"):
-            result = result.detach().cpu().numpy()
-        outs.append(result)
+        outs.append(_extract_numpy_features(result))
     return numpy.concatenate(outs, axis=1)
 
 
-async def main():
-    with pynng.Rep0(listen=address, recv_timeout=300) as sock:
-        print(f"DINOv3 server listening on {address}")
+async def main(listen_address: str):
+    import pynng
+    from nahual.server import responder
+
+    with pynng.Rep0(listen=listen_address, recv_timeout=300) as sock:
+        print(f"DINOv3 server listening on {listen_address}", flush=True)
         async with trio.open_nursery() as nursery:
             responder_curried = partial(responder, setup=setup)
             nursery.start_soon(responder_curried, sock)
 
 
 if __name__ == "__main__":
+    args = _parse_args()
     try:
-        trio.run(main)
+        import trio
+
+        trio.run(main, args.address)
     except KeyboardInterrupt:
         pass
