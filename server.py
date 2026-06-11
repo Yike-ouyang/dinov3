@@ -9,6 +9,7 @@ Run with:
 
 import argparse
 import os
+import re
 from functools import partial
 from pathlib import Path
 from typing import Callable, Optional, Tuple
@@ -18,6 +19,9 @@ import numpy
 
 # Repo root containing hubconf.py — defaults to the directory of this file.
 REPO_DIR = os.environ.get("DINOV3_REPO_DIR", os.path.dirname(os.path.abspath(__file__)))
+DINOV3_WEIGHTS_BASE_URL = os.environ.get(
+    "DINOV3_WEIGHTS_BASE_URL", "https://dl.fbaipublicfiles.com/dinov3"
+)
 
 
 def _parse_args():
@@ -61,6 +65,43 @@ def _extract_numpy_features(result) -> numpy.ndarray:
     return result
 
 
+def _official_checkpoint_url(path: Path) -> str:
+    filename = path.name
+    match = re.match(r"^(dinov3_.+?)_pretrain_.+\.pth$", filename)
+    if not match:
+        raise ValueError(
+            f"Cannot infer a DINOv3 download URL from checkpoint name {filename!r}. "
+            "Use a filename like dinov3_vits16_pretrain_lvd1689m-08c60483.pth."
+        )
+    model_dir = match.group(1)
+    return f"{DINOV3_WEIGHTS_BASE_URL.rstrip('/')}/{model_dir}/{filename}"
+
+
+def _download_checkpoint_if_missing(path: Path) -> None:
+    if path.exists():
+        return
+
+    import fcntl
+    import torch
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    lock_path = path.with_suffix(path.suffix + ".lock")
+    with lock_path.open("w") as lock_file:
+        fcntl.flock(lock_file, fcntl.LOCK_EX)
+        if path.exists():
+            return
+
+        url = _official_checkpoint_url(path)
+        tmp_path = path.with_suffix(path.suffix + ".tmp")
+        if tmp_path.exists():
+            tmp_path.unlink()
+
+        print(f"Downloading DINOv3 weights from {url} to {path}", flush=True)
+        torch.hub.download_url_to_file(url, str(tmp_path), progress=True)
+        tmp_path.replace(path)
+        print(f"DINOv3 weights downloaded to {path}", flush=True)
+
+
 def _normalise_weights(weights, backbones):
     if weights is None:
         return None
@@ -79,12 +120,7 @@ def _normalise_weights(weights, backbones):
 
     if "/" in weights or weights.endswith(".pth"):
         path = Path(weights).expanduser()
-        if not path.exists():
-            raise FileNotFoundError(
-                f"DINOv3 weights file does not exist on this server: {path}. "
-                "Use a shared path visible from the SLURM server node, or pass "
-                "one of the built-in aliases: LVD1689M, SAT493M."
-            )
+        _download_checkpoint_if_missing(path)
         return str(path)
 
     return weights
