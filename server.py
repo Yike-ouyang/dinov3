@@ -10,7 +10,9 @@ Run with:
 import argparse
 import os
 from functools import partial
+from pathlib import Path
 from typing import Callable, Optional, Tuple
+from urllib.parse import urlparse
 
 import numpy
 
@@ -59,6 +61,35 @@ def _extract_numpy_features(result) -> numpy.ndarray:
     return result
 
 
+def _normalise_weights(weights, backbones):
+    if weights is None:
+        return None
+
+    weights = str(weights).strip()
+    if weights == "" or weights.lower() in {"none", "null", "false", "-"}:
+        return None
+
+    upper_weights = weights.upper()
+    if upper_weights in backbones.Weights.__members__:
+        return backbones.Weights[upper_weights]
+
+    parsed = urlparse(weights)
+    if parsed.scheme in {"http", "https", "file"}:
+        return weights
+
+    if "/" in weights or weights.endswith(".pth"):
+        path = Path(weights).expanduser()
+        if not path.exists():
+            raise FileNotFoundError(
+                f"DINOv3 weights file does not exist on this server: {path}. "
+                "Use a shared path visible from the SLURM server node, or pass "
+                "one of the built-in aliases: LVD1689M, SAT493M."
+            )
+        return str(path)
+
+    return weights
+
+
 def setup(
     model_name: str = "dinov3_vits16",
     weights: Optional[str] = None,
@@ -83,13 +114,14 @@ def setup(
     """
     torch_device = _torch_device(device)
 
-    kwargs = {"pretrained": bool(pretrained)}
-    if weights is not None:
-        kwargs["weights"] = weights
-
     # Skip torch.hub.load — it spawns a subprocess for the local repo lookup
     # which can stall under nix. Import the factory directly instead.
     from dinov3.hub import backbones, classifiers, segmentors, depthers, dinotxt
+
+    weights = _normalise_weights(weights, backbones)
+    kwargs = {"pretrained": bool(pretrained)}
+    if weights is not None:
+        kwargs["weights"] = weights
     factories = {}
     for mod in (backbones, classifiers, segmentors, depthers, dinotxt):
         for name in getattr(mod, "__all__", []) + [
